@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::log;
+use crate::log::{self, LogEntry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatusCode {
@@ -137,6 +137,7 @@ struct Request {
     reader: BufReader<TcpStream>,
     headers: HashMap<String, String>,
     body_length: u64,
+    max_body_len_bytes: u64,
     total_header_bytes: usize,
 }
 
@@ -147,6 +148,7 @@ impl Request {
             headers: HashMap::new(),
             body_length: 0,
             total_header_bytes: 102400,
+            max_body_len_bytes: 1048576,
         }
     }
 
@@ -164,7 +166,7 @@ impl Request {
 
     fn is_content_length_allowed(&self, body_length: u64) -> bool {
         //  1MB - kanske fixar så den kan modifieras på egen hand sen
-        if body_length >= 1048576 {
+        if body_length >= self.max_body_len_bytes {
             println!("Content-Length is too large.");
             return false;
         }
@@ -177,13 +179,13 @@ impl Request {
     }
 }
 
-//  handle_connection behöver en funktion som räknar timear ut när hela headern tar för lång tid, inte bara per rad
-
 fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     let run_timer: Instant = Instant::now();
 
     let Ok(mut write_socket) = socket.try_clone() else {
-        //  Socket kunde inte klona sig till writer - kan skickar till loggerfunktion senare
+        LogEntry::new()
+            .set_level(log::LogLevel::Error)
+            .set_message("Error cloning socket.");
         return;
     };
 
@@ -192,7 +194,9 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
     let mut request_line: String = String::new();
     if let Err(e) = request.reader.read_line(&mut request_line) {
-        //  Read-line sket sig - kan skickar till loggerfunktion senare
+        LogEntry::new()
+            .set_level(log::LogLevel::Error)
+            .set_message(format!("Failed to read request line: {e:?}"));
 
         response.set_status(StatusCode::InternalServerError);
         response.send(&mut write_socket);
@@ -205,6 +209,9 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     loop {
         let Ok(buffer_len) = request.reader.read_line(&mut header_line) else {
             //  Read-line sket sig - kan skickar till loggerfunktion senare
+            LogEntry::new()
+                .set_level(log::LogLevel::Error)
+                .set_message(format!("Failed to read request line."));
 
             response.set_status(StatusCode::InternalServerError);
             response.send(&mut write_socket);
@@ -212,7 +219,9 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         };
 
         if run_timer.elapsed().as_secs() > 10 {
-            //  Read-line sket sig - kan skickar till loggerfunktion senare
+            LogEntry::new()
+                .set_level(log::LogLevel::Error)
+                .set_message("Failed to read header line.");
 
             response.set_status(StatusCode::RequestTimeout);
             response.send(&mut write_socket);
@@ -225,7 +234,12 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
         let new_total_byte_count: usize = read_byte_count + buffer_len;
         if new_total_byte_count > request.total_header_bytes {
-            //  Innehöllet på hela-headern var för stort - kan skickar till loggerfunktion senare
+            LogEntry::new()
+                .set_level(log::LogLevel::Error)
+                .set_message(format!(
+                    "Content of header exceeded the max of {} bytes",
+                    request.total_header_bytes
+                ));
 
             response.set_status(StatusCode::PayloadTooLarge);
             response.send(&mut write_socket);
@@ -247,7 +261,9 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         let value: String = key_value_pair[1].trim().to_owned();
 
         if !is_valid_header_key(&key) || !is_valid_header_value(&value) {
-            //  Header-rad innehöll olagliga tecken - kan skickar till loggerfunktion senare
+            LogEntry::new()
+                .set_level(log::LogLevel::Error)
+                .set_message("Header value or key contained illegal characters.");
 
             response.set_status(StatusCode::BadRequest);
             response.send(&mut write_socket);
@@ -256,7 +272,9 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
         if key.eq_ignore_ascii_case("content-length") {
             let Ok(parsed_req_value) = request.parse_content_length(&value) else {
-                //  kunde inte parsa content-lengthvärdet till u64 - kan skickar till loggerfunktion senare
+                LogEntry::new()
+                    .set_level(log::LogLevel::Error)
+                    .set_message("Content-Length was unabled to be parsed to u64.");
 
                 response.set_status(StatusCode::BadRequest);
                 response.send(&mut write_socket);
@@ -264,7 +282,12 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
             };
 
             if !request.is_content_length_allowed(parsed_req_value) {
-                //  Bodyn är för lång, korta ner den kompis - kan skickar till loggerfunktion senare
+                LogEntry::new()
+                    .set_level(log::LogLevel::Error)
+                    .set_message(format!(
+                        "The max allowed body length of {} bytes was exceeded.",
+                        request.max_body_len_bytes
+                    ));
 
                 response.set_status(StatusCode::PayloadTooLarge);
                 response.send(&mut write_socket);
@@ -282,7 +305,9 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     let mut body: Take<BufReader<TcpStream>> = request.reader.take(request.body_length);
 
     if let Err(e) = body.read_exact(&mut body_buffer) {
-        //  Body faila att läsas - kan skickar till loggerfunktion senare
+        LogEntry::new()
+            .set_level(log::LogLevel::Error)
+            .set_message(format!("Could not read body: {e:?}"));
 
         response.set_status(StatusCode::BadRequest);
         response.send(&mut write_socket);
