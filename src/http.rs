@@ -3,69 +3,15 @@ use std::{
     io::{BufRead, BufReader, Read, Take, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     num::ParseIntError,
-    println, thread,
+    println,
+    str::FromStr,
+    thread,
     time::{Duration, Instant},
 };
 
-use crate::log::{self, LogEntry};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StatusCode {
-    Ok,
-    Created,
-    NoContent,
-    BadRequest,
-    Unauthorized,
-    Forbidden,
-    NotFound,
-    MethodNotAllowed,
-    RequestTimeout,
-    PayloadTooLarge,
-    UnsupportedMediaType,
-    InternalServerError,
-    NotImplemented,
-    ServiceUnavailable,
-}
-
-impl StatusCode {
-    fn code(&self) -> u16 {
-        match self {
-            StatusCode::Ok => 200,
-            StatusCode::Created => 201,
-            StatusCode::NoContent => 204,
-            StatusCode::BadRequest => 400,
-            StatusCode::Unauthorized => 401,
-            StatusCode::Forbidden => 403,
-            StatusCode::NotFound => 404,
-            StatusCode::MethodNotAllowed => 405,
-            StatusCode::RequestTimeout => 408,
-            StatusCode::PayloadTooLarge => 413,
-            StatusCode::UnsupportedMediaType => 415,
-            StatusCode::InternalServerError => 500,
-            StatusCode::NotImplemented => 501,
-            StatusCode::ServiceUnavailable => 503,
-        }
-    }
-
-    fn reason_msg(&self) -> &'static str {
-        match self {
-            StatusCode::Ok => "OK",
-            StatusCode::Created => "Created",
-            StatusCode::NoContent => "No Content",
-            StatusCode::BadRequest => "Bad Request",
-            StatusCode::Unauthorized => "Unauthorized",
-            StatusCode::Forbidden => "Forbidden",
-            StatusCode::NotFound => "Not Found",
-            StatusCode::MethodNotAllowed => "Method Not Allowed",
-            StatusCode::RequestTimeout => "Request Timeout",
-            StatusCode::PayloadTooLarge => "Payload Too Large",
-            StatusCode::UnsupportedMediaType => "Unsupported Media Type",
-            StatusCode::InternalServerError => "Internal Server Error",
-            StatusCode::NotImplemented => "Not Implemented",
-            StatusCode::ServiceUnavailable => "Service Unavailable",
-        }
-    }
-}
+use crate::log::{LogEntry, LogLevel};
+use crate::method::Method;
+use crate::status::StatusCode;
 
 struct Response {
     status: StatusCode,
@@ -165,7 +111,6 @@ impl Request {
     }
 
     fn is_content_length_allowed(&self, body_length: u64) -> bool {
-        //  1MB - kanske fixar så den kan modifieras på egen hand sen
         if body_length >= self.max_body_len_bytes {
             println!("Content-Length is too large.");
             return false;
@@ -177,6 +122,32 @@ impl Request {
     fn set_body_length(&mut self, body_length: u64) {
         self.body_length = body_length;
     }
+
+    fn handle_request_line(request_line: &str) -> Result<Vec<&str>, StatusCode> {
+        let split_request_line: Vec<&str> = request_line.split_whitespace().collect();
+
+        if split_request_line.len() != 3 {
+            return Err(StatusCode::BadRequest);
+        }
+
+        if let Err(e) = Method::from_str(split_request_line[0]) {
+            return Err(e);
+        };
+
+        if !split_request_line[1].starts_with('/')
+            || split_request_line[1]
+                .chars()
+                .any(|c| c.is_control() || c == ' ')
+        {
+            return Err(StatusCode::BadRequest);
+        }
+
+        if split_request_line[2] != "HTTP/1.0" && split_request_line[2] != "HTTP/1.1" {
+            return Err(StatusCode::HttpVersionNotSupported);
+        }
+
+        return Ok(split_request_line);
+    }
 }
 
 fn handle_connection(socket: TcpStream, addr: SocketAddr) {
@@ -184,7 +155,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
     let Ok(mut write_socket) = socket.try_clone() else {
         LogEntry::new()
-            .set_level(log::LogLevel::Error)
+            .set_level(LogLevel::Error)
             .set_message("Error cloning socket.");
         return;
     };
@@ -195,7 +166,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     let mut request_line: String = String::new();
     if let Err(e) = request.reader.read_line(&mut request_line) {
         LogEntry::new()
-            .set_level(log::LogLevel::Error)
+            .set_level(LogLevel::Error)
             .set_message(format!("Failed to read request line: {e:?}"));
 
         response.set_status(StatusCode::InternalServerError);
@@ -203,14 +174,28 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         return;
     };
 
+    request.handle_request_line();
+
+    if split_request_line.len() != 3 {
+        LogEntry::new()
+            .set_level(LogLevel::Error)
+            .set_message(format!(
+                "Malformed request line: expected 3 parts got {}",
+                split_request_line.len()
+            ));
+
+        response.set_status(StatusCode::BadRequest);
+        response.send(&mut write_socket);
+        return;
+    }
+
     let mut header_line: String = String::new();
     let mut read_byte_count: usize = 0;
 
     loop {
         let Ok(buffer_len) = request.reader.read_line(&mut header_line) else {
-            //  Read-line sket sig - kan skickar till loggerfunktion senare
             LogEntry::new()
-                .set_level(log::LogLevel::Error)
+                .set_level(LogLevel::Error)
                 .set_message(format!("Failed to read request line."));
 
             response.set_status(StatusCode::InternalServerError);
@@ -220,7 +205,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
         if run_timer.elapsed().as_secs() > 10 {
             LogEntry::new()
-                .set_level(log::LogLevel::Error)
+                .set_level(LogLevel::Error)
                 .set_message("Failed to read header line.");
 
             response.set_status(StatusCode::RequestTimeout);
@@ -235,7 +220,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         let new_total_byte_count: usize = read_byte_count + buffer_len;
         if new_total_byte_count > request.total_header_bytes {
             LogEntry::new()
-                .set_level(log::LogLevel::Error)
+                .set_level(LogLevel::Error)
                 .set_message(format!(
                     "Content of header exceeded the max of {} bytes",
                     request.total_header_bytes
@@ -262,7 +247,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
         if !is_valid_header_key(&key) || !is_valid_header_value(&value) {
             LogEntry::new()
-                .set_level(log::LogLevel::Error)
+                .set_level(LogLevel::Error)
                 .set_message("Header value or key contained illegal characters.");
 
             response.set_status(StatusCode::BadRequest);
@@ -273,7 +258,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         if key.eq_ignore_ascii_case("content-length") {
             let Ok(parsed_req_value) = request.parse_content_length(&value) else {
                 LogEntry::new()
-                    .set_level(log::LogLevel::Error)
+                    .set_level(LogLevel::Error)
                     .set_message("Content-Length was unabled to be parsed to u64.");
 
                 response.set_status(StatusCode::BadRequest);
@@ -283,7 +268,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
             if !request.is_content_length_allowed(parsed_req_value) {
                 LogEntry::new()
-                    .set_level(log::LogLevel::Error)
+                    .set_level(LogLevel::Error)
                     .set_message(format!(
                         "The max allowed body length of {} bytes was exceeded.",
                         request.max_body_len_bytes
@@ -306,13 +291,15 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
     if let Err(e) = body.read_exact(&mut body_buffer) {
         LogEntry::new()
-            .set_level(log::LogLevel::Error)
+            .set_level(LogLevel::Error)
             .set_message(format!("Could not read body: {e:?}"));
 
         response.set_status(StatusCode::BadRequest);
         response.send(&mut write_socket);
         return;
     };
+
+    println!("{request_line}");
 
     response.set_status(StatusCode::Ok);
     response.send(&mut write_socket);
@@ -337,7 +324,11 @@ pub fn listen(ip: &str, port: u16) {
                     handle_connection(socket, addr);
                 });
             }
-            Err(e) => println!("Couldn't get client: {e:?}"), //    Detta skulle kunna visas i loggar
+            Err(e) => {
+                LogEntry::new()
+                    .set_level(LogLevel::Warn)
+                    .set_message(format!("Failed to accept client: {e:?}"));
+            }
         }
     }
 }
