@@ -7,6 +7,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::log;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StatusCode {
     Ok,
     Created,
@@ -261,9 +264,9 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
             };
 
             if !request.is_content_length_allowed(parsed_req_value) {
-                //  kunde inte parsa content-lengthvärdet till u64 - kan skickar till loggerfunktion senare
+                //  Bodyn är för lång, korta ner den kompis - kan skickar till loggerfunktion senare
 
-                response.set_status(StatusCode::InternalServerError);
+                response.set_status(StatusCode::PayloadTooLarge);
                 response.send(&mut write_socket);
                 return;
             }
