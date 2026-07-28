@@ -1,17 +1,21 @@
 use std::{
     collections::HashMap,
+    hash::Hash,
     io::{BufRead, BufReader, Read, Take, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     num::ParseIntError,
     println,
     str::FromStr,
-    thread,
+    string, thread,
     time::{Duration, Instant},
 };
 
-use crate::log::{LogEntry, LogLevel};
 use crate::method::Method;
 use crate::status::StatusCode;
+use crate::{
+    log::{LogEntry, LogLevel},
+    method,
+};
 
 struct Response {
     status: StatusCode,
@@ -79,6 +83,50 @@ fn is_valid_header_value(value: &str) -> bool {
     !value.chars().any(|c: char| c == '\r' || c == '\n')
 }
 
+struct RequestLine {
+    method: Method,
+    path: String,
+    version: String,
+}
+
+impl RequestLine {
+    fn new() -> Self {
+        RequestLine {
+            method: Method::Get,
+            path: "/".to_owned(),
+            version: String::new(),
+        }
+    }
+
+    fn parse(request_line: String) -> Result<Self, StatusCode> {
+        let mut request = RequestLine::new();
+        let split_request_line: Vec<String> = request_line
+            .split_whitespace()
+            .map(|s| s.to_owned())
+            .collect();
+
+        if split_request_line.len() != 3 {
+            return Err(StatusCode::BadRequest);
+        }
+
+        request.method = Method::from_str(&split_request_line[0])?;
+        request.path = split_request_line[1].clone();
+        request.version = split_request_line[2].clone();
+
+        if !request.path.starts_with('/')
+            || request.path.chars().any(|c| c.is_control() || c == ' ')
+        {
+            return Err(StatusCode::BadRequest);
+        }
+
+        if request.version != "HTTP/1.0" && request.version != "HTTP/1.1" {
+            return Err(StatusCode::HttpVersionNotSupported);
+        }
+
+        return Ok(request);
+    }
+}
+
 struct Request {
     reader: BufReader<TcpStream>,
     headers: HashMap<String, String>,
@@ -122,32 +170,6 @@ impl Request {
     fn set_body_length(&mut self, body_length: u64) {
         self.body_length = body_length;
     }
-
-    fn handle_request_line(request_line: &str) -> Result<Vec<&str>, StatusCode> {
-        let split_request_line: Vec<&str> = request_line.split_whitespace().collect();
-
-        if split_request_line.len() != 3 {
-            return Err(StatusCode::BadRequest);
-        }
-
-        if let Err(e) = Method::from_str(split_request_line[0]) {
-            return Err(e);
-        };
-
-        if !split_request_line[1].starts_with('/')
-            || split_request_line[1]
-                .chars()
-                .any(|c| c.is_control() || c == ' ')
-        {
-            return Err(StatusCode::BadRequest);
-        }
-
-        if split_request_line[2] != "HTTP/1.0" && split_request_line[2] != "HTTP/1.1" {
-            return Err(StatusCode::HttpVersionNotSupported);
-        }
-
-        return Ok(split_request_line);
-    }
 }
 
 fn handle_connection(socket: TcpStream, addr: SocketAddr) {
@@ -163,8 +185,8 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     let mut request: Request = Request::new(socket);
     let mut response: Response = Response::new();
 
-    let mut request_line: String = String::new();
-    if let Err(e) = request.reader.read_line(&mut request_line) {
+    let mut request_line_str: String = String::new();
+    if let Err(e) = request.reader.read_line(&mut request_line_str) {
         LogEntry::new()
             .set_level(LogLevel::Error)
             .set_message(format!("Failed to read request line: {e:?}"));
@@ -174,20 +196,20 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         return;
     };
 
-    request.handle_request_line();
+    let request_line: RequestLine = match RequestLine::parse(request_line_str) {
+        Ok(req) => req,
+        Err(status_code_err) => {
+            LogEntry::new()
+                .set_level(LogLevel::Error)
+                .set_message(format!("Failed to parse request line."));
 
-    if split_request_line.len() != 3 {
-        LogEntry::new()
-            .set_level(LogLevel::Error)
-            .set_message(format!(
-                "Malformed request line: expected 3 parts got {}",
-                split_request_line.len()
-            ));
+            response.set_status(status_code_err);
+            response.send(&mut write_socket);
+            return;
+        }
+    };
 
-        response.set_status(StatusCode::BadRequest);
-        response.send(&mut write_socket);
-        return;
-    }
+    println!("{:?}", request_line.method);
 
     let mut header_line: String = String::new();
     let mut read_byte_count: usize = 0;
@@ -298,8 +320,6 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         response.send(&mut write_socket);
         return;
     };
-
-    println!("{request_line}");
 
     response.set_status(StatusCode::Ok);
     response.send(&mut write_socket);
