@@ -1,8 +1,8 @@
-pub mod http;
+mod http;
+use http::server;
+
 pub mod log;
-pub mod method;
-pub mod status;
 
 fn main() {
-    http::listen("127.0.0.1", 3000);
+    server::listen("127.0.0.1", 3000);
 }
