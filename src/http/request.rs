@@ -3,12 +3,18 @@ use std::collections::HashMap;
 use std::io::{BufReader, Read, Take};
 use std::net::TcpStream;
 use std::num::ParseIntError;
-use std::str::FromStr;
+use std::str::{FromStr, from_utf8, Split};
+
+fn is_valid_query_value(value: &str) -> bool {
+    return !value.chars().any(|c| c.is_control());
+}
 
 pub struct RequestLine {
     method: Method,
     path: String,
+    query: HashMap<String, String>
     version: String,
+    uri_max_len: usize
 }
 
 impl RequestLine {
@@ -16,7 +22,9 @@ impl RequestLine {
         RequestLine {
             method: Method::Get,
             path: "/".to_owned(),
+            query: HashMap::new(),
             version: String::new(),
+            uri_max_len: 8192,
         }
     }
 
@@ -28,12 +36,17 @@ impl RequestLine {
         return &self.path;
     }
 
+    pub fn get_query(&self) -> &HashMap<String, String> {
+
+    }
+
     pub fn get_version(&self) -> &String {
         return &self.version;
     }
 
     pub fn parse(request_line: String) -> Result<Self, StatusCode> {
         let mut request = RequestLine::new();
+
         let split_request_line: Vec<String> = request_line
             .split_whitespace()
             .map(|s| s.to_owned())
@@ -46,6 +59,37 @@ impl RequestLine {
         request.method = Method::from_str(&split_request_line[0])?;
         request.path = split_request_line[1].clone();
         request.version = split_request_line[2].clone();
+
+        if request.path.len() >= request.uri_max_len{
+            return Err(StatusCode::UriTooLong);
+        }
+
+        if let Some((path_part, query_part)) = request.path.split_once('?') {
+
+            if !is_valid_query_value(query_part){
+                return Err(StatusCode::BadRequest);
+            }
+
+            // VIKTIGT : MÅSTE DECODA QUERY - PALLAR DOCK INTE NU LMAO
+
+            let query_pairs: Vec<&str> = query_part.split("&").collect();
+
+            for pair in query_pairs{
+                let key_value: Vec<&str> = pair.splitn(2, "=").collect();
+
+                if key_value.len() != 2{
+                    return Err(StatusCode::BadRequest);
+                }
+
+                if !is_valid_query_value(key_value[0]) || !is_valid_query_value(key_value[1]){
+                    return Err(StatusCode::BadRequest);
+                }
+
+                request.query.insert(key_value[0].to_owned(), key_value[1].to_owned());
+            }
+
+            request.path = path_part.to_owned();
+        }
 
         if !request.path.starts_with('/')
             || request.path.chars().any(|c| c.is_control() || c == ' ')
@@ -113,10 +157,18 @@ impl Request {
         self.body_length = body_length;
     }
 
-    pub fn read_body(&mut self) -> std::io::Result<Vec<u8>> {
+    pub fn read_body(&mut self) -> Result<String, StatusCode> {
         let mut body_buffer: Vec<u8> = vec![0; self.body_length as usize];
         let mut body: Take<&mut BufReader<TcpStream>> = (&mut self.reader).take(self.body_length);
-        body.read_exact(&mut body_buffer)?;
-        Ok(body_buffer)
+
+        if let Err(_) = body.read_exact(&mut body_buffer) {
+            return Err(StatusCode::BadRequest);
+        };
+
+        let Ok(return_body) = from_utf8(&body_buffer) else {
+            return Err(StatusCode::BadRequest);
+        };
+
+        Ok(return_body.to_owned())
     }
 }

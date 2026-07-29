@@ -155,17 +155,18 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         header_line.clear();
     }
 
-    let Ok(body) = request.read_body() else {
-        LogEntry::new()
-            .set_level(LogLevel::Error)
-            .set_message(format!("Could not read body."));
+    let body: String = match request.read_body() {
+        Ok(v) => v,
+        Err(e) => {
+            LogEntry::new()
+                .set_level(LogLevel::Error)
+                .set_message(format!("Could not read body."));
 
-        response.set_status(StatusCode::BadRequest);
-        response.send(&mut write_socket);
-        return;
+            response.set_status(e);
+            response.send(&mut write_socket);
+            return;
+        }
     };
-
-    println!("{}", request_line.method);
 
     response.set_status(StatusCode::Ok);
     response.send(&mut write_socket);
