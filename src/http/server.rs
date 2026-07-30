@@ -111,8 +111,8 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
             continue;
         };
 
-        let key: String = key_value_pair[0].trim().to_owned();
-        let value: String = key_value_pair[1].trim().to_owned();
+        let key: String = key_value_pair[0].trim().to_owned().to_lowercase();
+        let value: String = key_value_pair[1].trim().to_owned().to_lowercase();
 
         if !is_valid_header_key(&key) || !is_valid_header_value(&value) {
             LogEntry::new()
@@ -124,7 +124,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
             return;
         }
 
-        if key.eq_ignore_ascii_case("content-length") {
+        if key == "content-length" {
             let Ok(parsed_req_value) = request.parse_content_length(&value) else {
                 LogEntry::new()
                     .set_level(LogLevel::Error)
@@ -152,6 +152,8 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         }
 
         request.insert_header(key, value);
+        request_line.verify_query_by_headers(request.get_headers(), request_line.get_query());
+
         header_line.clear();
     }
 

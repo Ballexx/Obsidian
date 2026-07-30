@@ -1,8 +1,10 @@
 use crate::http::{method::Method, status::StatusCode};
 use std::collections::HashMap;
+use std::fmt::format;
 use std::io::{BufReader, Read, Take};
 use std::net::TcpStream;
 use std::num::ParseIntError;
+use std::println;
 use std::str::{Bytes, Chars, FromStr, Split, from_utf8};
 
 fn is_valid_query_value(value: &str) -> bool {
@@ -10,21 +12,38 @@ fn is_valid_query_value(value: &str) -> bool {
 }
 
 fn decode_query(query: &str) -> Result<String, StatusCode> {
-    let mut byte_list: Bytes = query.bytes();
+    let mut query_as_bytes: Bytes = query.bytes();
+    let mut new_byte_list: Vec<u8> = Vec::new();
 
-    let mut decoded_query: String = String::new();
-
-    while let Some(c) = byte_list.next() {
+    while let Some(c) = query_as_bytes.next() {
         if c != b'%' {
-            decoded_query.push_str(&(c as char).to_string());
+            new_byte_list.push(c);
             continue;
         }
 
-        let a: Option<u8> = byte_list.next();
-        let b: Option<u8> = byte_list.next();
+        let byte1: Option<u8> = query_as_bytes.next();
+        let byte2: Option<u8> = query_as_bytes.next();
 
-        if let (Some(a), Some(b)) = (a, b) {}
+        if let (Some(byte1), Some(byte2)) = (byte1, byte2) {
+            let bytes: [u8; 2] = [byte1, byte2];
+
+            let Ok(hex_str) = std::str::from_utf8(&bytes) else {
+                return Err(StatusCode::BadRequest);
+            };
+            let Ok(result) = u8::from_str_radix(hex_str, 16) else {
+                return Err(StatusCode::BadRequest);
+            };
+
+            new_byte_list.push(result);
+        } else {
+            return Err(StatusCode::BadRequest);
+        }
     }
+
+    let Ok(decoded_query) = String::from_utf8(new_byte_list) else {
+        return Err(StatusCode::BadRequest);
+    };
+
     Ok(decoded_query)
 }
 
@@ -63,6 +82,27 @@ impl RequestLine {
         return &self.version;
     }
 
+    pub fn verify_query_by_headers(
+        &self,
+        headers: &HashMap<String, String>,
+        queries: &HashMap<String, String>,
+    ) {
+        // Denna lösningen suger - får fixa nåt nytt
+
+        if let Some(v) = headers.get("content-length") {
+            if v != "application/x-www-form-urlencoded" {
+                return;
+            }
+
+            for query in queries {
+                if query.0.contains("+") {
+                    que
+                }
+                if query.1.contains("+") {}
+            }
+        }
+    }
+
     pub fn parse(request_line: String) -> Result<Self, StatusCode> {
         let mut request: RequestLine = RequestLine::new();
 
@@ -88,9 +128,11 @@ impl RequestLine {
                 return Err(StatusCode::BadRequest);
             }
 
-            // VIKTIGT : MÅSTE DECODA QUERY - PALLAR DOCK INTE NU LMAO
+            let Ok(decoded_query) = decode_query(query_part) else {
+                return Err(StatusCode::BadRequest);
+            };
 
-            let query_pairs: Vec<&str> = query_part.split("&").collect();
+            let query_pairs: Vec<&str> = decoded_query.split("&").collect();
 
             for pair in query_pairs {
                 let key_value: Vec<&str> = pair.splitn(2, "=").collect();
@@ -158,6 +200,10 @@ impl Request {
 
     pub fn insert_header(&mut self, key: String, value: String) {
         self.headers.insert(key, value);
+    }
+
+    pub fn get_headers(&self) -> &HashMap<String, String> {
+        return &self.headers;
     }
 
     pub fn parse_content_length(&self, value: &str) -> Result<u64, ParseIntError> {
