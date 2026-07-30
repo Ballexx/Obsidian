@@ -3,18 +3,37 @@ use std::collections::HashMap;
 use std::io::{BufReader, Read, Take};
 use std::net::TcpStream;
 use std::num::ParseIntError;
-use std::str::{FromStr, from_utf8, Split};
+use std::str::{Bytes, Chars, FromStr, Split, from_utf8};
 
 fn is_valid_query_value(value: &str) -> bool {
     return !value.chars().any(|c| c.is_control());
 }
 
+fn decode_query(query: &str) -> Result<String, StatusCode> {
+    let mut byte_list: Bytes = query.bytes();
+
+    let mut decoded_query: String = String::new();
+
+    while let Some(c) = byte_list.next() {
+        if c != b'%' {
+            decoded_query.push_str(&(c as char).to_string());
+            continue;
+        }
+
+        let a: Option<u8> = byte_list.next();
+        let b: Option<u8> = byte_list.next();
+
+        if let (Some(a), Some(b)) = (a, b) {}
+    }
+    Ok(decoded_query)
+}
+
 pub struct RequestLine {
     method: Method,
     path: String,
-    query: HashMap<String, String>
+    query: HashMap<String, String>,
     version: String,
-    uri_max_len: usize
+    uri_max_len: usize,
 }
 
 impl RequestLine {
@@ -37,7 +56,7 @@ impl RequestLine {
     }
 
     pub fn get_query(&self) -> &HashMap<String, String> {
-
+        return &self.query;
     }
 
     pub fn get_version(&self) -> &String {
@@ -45,7 +64,7 @@ impl RequestLine {
     }
 
     pub fn parse(request_line: String) -> Result<Self, StatusCode> {
-        let mut request = RequestLine::new();
+        let mut request: RequestLine = RequestLine::new();
 
         let split_request_line: Vec<String> = request_line
             .split_whitespace()
@@ -60,13 +79,12 @@ impl RequestLine {
         request.path = split_request_line[1].clone();
         request.version = split_request_line[2].clone();
 
-        if request.path.len() >= request.uri_max_len{
+        if request.path.len() >= request.uri_max_len {
             return Err(StatusCode::UriTooLong);
         }
 
         if let Some((path_part, query_part)) = request.path.split_once('?') {
-
-            if !is_valid_query_value(query_part){
+            if !is_valid_query_value(query_part) {
                 return Err(StatusCode::BadRequest);
             }
 
@@ -74,18 +92,20 @@ impl RequestLine {
 
             let query_pairs: Vec<&str> = query_part.split("&").collect();
 
-            for pair in query_pairs{
+            for pair in query_pairs {
                 let key_value: Vec<&str> = pair.splitn(2, "=").collect();
 
-                if key_value.len() != 2{
+                if key_value.len() != 2 {
                     return Err(StatusCode::BadRequest);
                 }
 
-                if !is_valid_query_value(key_value[0]) || !is_valid_query_value(key_value[1]){
+                if !is_valid_query_value(key_value[0]) || !is_valid_query_value(key_value[1]) {
                     return Err(StatusCode::BadRequest);
                 }
 
-                request.query.insert(key_value[0].to_owned(), key_value[1].to_owned());
+                request
+                    .query
+                    .insert(key_value[0].to_owned(), key_value[1].to_owned());
             }
 
             request.path = path_part.to_owned();
@@ -101,7 +121,7 @@ impl RequestLine {
             return Err(StatusCode::HttpVersionNotSupported);
         }
 
-        return Ok(request);
+        Ok(request)
     }
 }
 
