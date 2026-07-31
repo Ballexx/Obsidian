@@ -6,7 +6,7 @@ use std::net::TcpStream;
 pub struct Response {
     pub status: StatusCode,
     pub headers: HashMap<String, String>,
-    pub body: String,
+    body: String,
 }
 
 impl Response {
@@ -31,14 +31,14 @@ impl Response {
     }
 
     pub fn send(&self, writer: &mut TcpStream) {
-        let mut send_data: String = String::new();
+        let mut send_data = String::new();
         send_data.push_str(&format!(
             "HTTP/1.1 {} {}\r\n",
             self.status.code(),
             self.status.reason_msg(),
         ));
 
-        let content_len: usize = self.body.len();
+        let content_len = self.body.len();
         send_data.push_str(&format!("Content-Length: {}\r\n", content_len));
 
         for (key, value) in &self.headers {
@@ -50,7 +50,7 @@ impl Response {
         }
 
         send_data.push_str(&format!("\r\n{}", self.body));
-        let data_as_bytes: Vec<u8> = send_data.into_bytes();
+        let data_as_bytes = send_data.into_bytes();
 
         if let Err(e) = writer.write_all(&data_as_bytes) {
             println!("Error sending response: {e:?}");

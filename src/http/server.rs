@@ -1,5 +1,5 @@
 use crate::log::{LogEntry, LogLevel};
-use crate::respond_and_return;
+use crate::{respond_and_return, log_err};
 use crate::{
     http::{
         method::Method,
@@ -7,12 +7,12 @@ use crate::{
         response::Response,
         status::StatusCode,
     },
-    log_err,
 };
 use std::io::{BufRead, BufReader, Read, Take};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
+use crate::http::{MAX_BODY_LEN_BYTES, TOTAL_HEADER_BYTES}
 
 fn is_valid_header_key(key: &str) -> bool {
     !key.is_empty()
@@ -26,23 +26,23 @@ fn is_valid_header_value(value: &str) -> bool {
 }
 
 fn handle_connection(socket: TcpStream, addr: SocketAddr) {
-    let run_timer: Instant = Instant::now();
+    let run_timer = Instant::now();
 
     let Ok(mut write_socket) = socket.try_clone() else {
         log_err!(LogLevel::Error, "Error cloning socket.");
         return;
     };
 
-    let mut request: Request = Request::new(socket);
-    let mut response: Response = Response::new();
+    let mut request = Request::new(socket);
+    let mut response = Response::new();
 
-    let mut request_line_str: String = String::new();
+    let mut request_line_str = String::new();
     if let Err(_) = request.get_reader().read_line(&mut request_line_str) {
         log_err!(LogLevel::Error, "Failed to read request line.");
         respond_and_return!(StatusCode::InternalServerError, response, &mut write_socket);
     };
 
-    let request_line: RequestLine = match RequestLine::parse(request_line_str) {
+    let request_line = match RequestLine::parse(request_line_str) {
         Ok(req) => req,
         Err(status_code_err) => {
             log_err!(LogLevel::Error, "Failed to parse request line.");
@@ -50,8 +50,8 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         }
     };
 
-    let mut header_line: String = String::new();
-    let mut read_byte_count: usize = 0;
+    let mut header_line = String::new();
+    let mut read_byte_count = 0;
 
     loop {
         let Ok(buffer_len) = request.get_reader().read_line(&mut header_line) else {
@@ -68,13 +68,13 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
             break;
         }
 
-        let new_total_byte_count: usize = read_byte_count + buffer_len;
-        if new_total_byte_count > *request.get_total_header_bytes() {
+        let new_total_byte_count = read_byte_count + buffer_len;
+        if new_total_byte_count > TOTAL_HEADER_BYTES {
             log_err!(
                 LogLevel::Error,
                 format!(
                     "Content of header exceeded the max of {} bytes",
-                    request.get_total_header_bytes()
+                    TOTAL_HEADER_BYTES
                 )
             );
             respond_and_return!(StatusCode::PayloadTooLarge, response, &mut write_socket);
@@ -91,8 +91,8 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
             continue;
         };
 
-        let key: String = key_value_pair[0].trim().to_owned().to_lowercase();
-        let value: String = key_value_pair[1].trim().to_owned().to_lowercase();
+        let key = key_value_pair[0].trim().to_owned().to_lowercase();
+        let value = key_value_pair[1].trim().to_owned().to_lowercase();
 
         if !is_valid_header_key(&key) || !is_valid_header_value(&value) {
             log_err!(
@@ -116,7 +116,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
                     LogLevel::Error,
                     format!(
                         "The max allowed body length of {} bytes was exceeded.",
-                        request.get_max_body_len_bytes()
+                        MAX_BODY_LEN_BYTES
                     )
                 );
                 respond_and_return!(StatusCode::PayloadTooLarge, response, &mut write_socket);
@@ -125,13 +125,15 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
             request.set_body_length(parsed_req_value);
         }
 
-        request.insert_header(key, value);
-        request_line.verify_query_by_headers(request.get_headers(), request_line.get_query());
+        if key == "content-type" && value == "application/x-www-form-urlencoded" {
+            request_line.handle_form_urlencoded(query);
+        }
 
+        request.insert_header(key, value);
         header_line.clear();
     }
 
-    let body: String = match request.read_body() {
+    let body = match request.read_body() {
         Ok(v) => v,
         Err(e) => {
             log_err!(LogLevel::Error, "Could not read body.");
@@ -146,15 +148,15 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 pub fn listen(ip: &str, port: u16) {
     let host = format!("{}:{}", ip, port);
     let Ok(listener) = TcpListener::bind(host) else {
-        println!("Failed to bind to port.");
+        log_err!(LogLevel::Error, "Failed to bind to port.");
         return;
     };
 
     loop {
         match listener.accept() {
             Ok((socket, addr)) => {
-                if let Err(e) = socket.set_read_timeout(Some(Duration::from_secs(5))) {
-                    println!("Failed to set read timeout: {e:?}");
+                if let Err(_) = socket.set_read_timeout(Some(Duration::from_secs(5))) {
+                    log_err!(LogLevel::Error, "Failed to set read timeout.");
                     return;
                 };
 
@@ -162,10 +164,8 @@ pub fn listen(ip: &str, port: u16) {
                     handle_connection(socket, addr);
                 });
             }
-            Err(e) => {
-                LogEntry::new()
-                    .set_level(LogLevel::Warn)
-                    .set_message(format!("Failed to accept client: {e:?}"));
+            Err(_) => {
+                log_err!(LogLevel::Error, "Failed to accept client.");
             }
         }
     }

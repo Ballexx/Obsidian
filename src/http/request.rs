@@ -1,3 +1,4 @@
+use crate::http::{URI_MAX_LEN, MAX_BODY_LEN_BYTES};
 use crate::http::{method::Method, status::StatusCode};
 use std::collections::HashMap;
 use std::fmt::format;
@@ -12,8 +13,8 @@ fn is_valid_query_value(value: &str) -> bool {
 }
 
 fn decode_query(query: &str) -> Result<String, StatusCode> {
-    let mut query_as_bytes: Bytes = query.bytes();
-    let mut new_byte_list: Vec<u8> = Vec::new();
+    let mut query_as_bytes = query.bytes();
+    let mut new_byte_list = Vec::new();max_body_len_bytes
 
     while let Some(c) = query_as_bytes.next() {
         if c != b'%' {
@@ -21,8 +22,8 @@ fn decode_query(query: &str) -> Result<String, StatusCode> {
             continue;
         }
 
-        let byte1: Option<u8> = query_as_bytes.next();
-        let byte2: Option<u8> = query_as_bytes.next();
+        let byte1 = query_as_bytes.next();
+        let byte2 = query_as_bytes.next();
 
         if let (Some(byte1), Some(byte2)) = (byte1, byte2) {
             let bytes: [u8; 2] = [byte1, byte2];
@@ -52,7 +53,6 @@ pub struct RequestLine {
     path: String,
     query: HashMap<String, String>,
     version: String,
-    uri_max_len: usize,
 }
 
 impl RequestLine {
@@ -62,7 +62,6 @@ impl RequestLine {
             path: "/".to_owned(),
             query: HashMap::new(),
             version: String::new(),
-            uri_max_len: 8192,
         }
     }
 
@@ -82,27 +81,10 @@ impl RequestLine {
         return &self.version;
     }
 
-    pub fn verify_query_by_headers(
-        &self,
-        headers: &HashMap<String, String>,
-        queries: &HashMap<String, String>,
-    ) {
-        // Denna lösningen suger - får fixa nåt nytt
-
-        if let Some(v) = headers.get("content-length") {
-            if v != "application/x-www-form-urlencoded" {
-                return;
-            }
-
-            for query in queries {
-                if query.0.contains("+") {}
-                if query.1.contains("+") {}
-            }
-        }
-    }
+    pub fn handle_form_urlencoded(&self, query: &String) -> String {}
 
     pub fn parse(request_line: String) -> Result<Self, StatusCode> {
-        let mut request: RequestLine = RequestLine::new();
+        let mut request = RequestLine::new();
 
         let split_request_line: Vec<String> = request_line
             .split_whitespace()
@@ -117,7 +99,7 @@ impl RequestLine {
         request.path = split_request_line[1].clone();
         request.version = split_request_line[2].clone();
 
-        if request.path.len() >= request.uri_max_len {
+        if request.path.len() >= URI_MAX_LEN {
             return Err(StatusCode::UriTooLong);
         }
 
@@ -169,8 +151,6 @@ pub struct Request {
     reader: BufReader<TcpStream>,
     headers: HashMap<String, String>,
     body_length: u64,
-    max_body_len_bytes: u64,
-    total_header_bytes: usize,
 }
 
 impl Request {
@@ -179,21 +159,11 @@ impl Request {
             reader: BufReader::new(socket),
             headers: HashMap::new(),
             body_length: 0,
-            total_header_bytes: 102400,
-            max_body_len_bytes: 1048576,
         }
     }
 
     pub fn get_reader(&mut self) -> &mut BufReader<TcpStream> {
         return &mut self.reader;
-    }
-
-    pub fn get_total_header_bytes(&self) -> &usize {
-        return &self.total_header_bytes;
-    }
-
-    pub fn get_max_body_len_bytes(&self) -> &u64 {
-        return &self.max_body_len_bytes;
     }
 
     pub fn insert_header(&mut self, key: String, value: String) {
@@ -209,7 +179,7 @@ impl Request {
     }
 
     pub fn is_content_length_allowed(&self, body_length: u64) -> bool {
-        if body_length >= self.max_body_len_bytes {
+        if body_length >= MAX_BODY_LEN_BYTES {
             println!("Content-Length is too large.");
             return false;
         }
@@ -222,8 +192,8 @@ impl Request {
     }
 
     pub fn read_body(&mut self) -> Result<String, StatusCode> {
-        let mut body_buffer: Vec<u8> = vec![0; self.body_length as usize];
-        let mut body: Take<&mut BufReader<TcpStream>> = (&mut self.reader).take(self.body_length);
+        let mut body_buffer = vec![0; self.body_length as usize];
+        let mut body = (&mut self.reader).take(self.body_length);
 
         if let Err(_) = body.read_exact(&mut body_buffer) {
             return Err(StatusCode::BadRequest);
