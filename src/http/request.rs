@@ -95,9 +95,7 @@ impl RequestLine {
             }
 
             for query in queries {
-                if query.0.contains("+") {
-                    que
-                }
+                if query.0.contains("+") {}
                 if query.1.contains("+") {}
             }
         }

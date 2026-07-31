@@ -1,10 +1,14 @@
-use crate::http::{
-    method::Method,
-    request::{Request, RequestLine},
-    response::Response,
-    status::StatusCode,
-};
 use crate::log::{LogEntry, LogLevel};
+use crate::respond_and_return;
+use crate::{
+    http::{
+        method::Method,
+        request::{Request, RequestLine},
+        response::Response,
+        status::StatusCode,
+    },
+    log_err,
+};
 use std::io::{BufRead, BufReader, Read, Take};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread;
@@ -25,9 +29,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     let run_timer: Instant = Instant::now();
 
     let Ok(mut write_socket) = socket.try_clone() else {
-        LogEntry::new()
-            .set_level(LogLevel::Error)
-            .set_message("Error cloning socket.");
+        log_err!(LogLevel::Error, "Error cloning socket.");
         return;
     };
 
@@ -35,26 +37,16 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     let mut response: Response = Response::new();
 
     let mut request_line_str: String = String::new();
-    if let Err(e) = request.get_reader().read_line(&mut request_line_str) {
-        LogEntry::new()
-            .set_level(LogLevel::Error)
-            .set_message(format!("Failed to read request line: {e:?}"));
-
-        response.set_status(StatusCode::InternalServerError);
-        response.send(&mut write_socket);
-        return;
+    if let Err(_) = request.get_reader().read_line(&mut request_line_str) {
+        log_err!(LogLevel::Error, "Failed to read request line.");
+        respond_and_return!(StatusCode::InternalServerError, response, &mut write_socket);
     };
 
     let request_line: RequestLine = match RequestLine::parse(request_line_str) {
         Ok(req) => req,
         Err(status_code_err) => {
-            LogEntry::new()
-                .set_level(LogLevel::Error)
-                .set_message(format!("Failed to parse request line."));
-
-            response.set_status(status_code_err);
-            response.send(&mut write_socket);
-            return;
+            log_err!(LogLevel::Error, "Failed to parse request line.");
+            respond_and_return!(status_code_err, response, &mut write_socket);
         }
     };
 
@@ -63,23 +55,13 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
     loop {
         let Ok(buffer_len) = request.get_reader().read_line(&mut header_line) else {
-            LogEntry::new()
-                .set_level(LogLevel::Error)
-                .set_message(format!("Failed to read request line."));
-
-            response.set_status(StatusCode::InternalServerError);
-            response.send(&mut write_socket);
-            return;
+            log_err!(LogLevel::Error, "Failed to read request line");
+            respond_and_return!(StatusCode::InternalServerError, response, &mut write_socket);
         };
 
         if run_timer.elapsed().as_secs() > 10 {
-            LogEntry::new()
-                .set_level(LogLevel::Error)
-                .set_message("Failed to read header line.");
-
-            response.set_status(StatusCode::RequestTimeout);
-            response.send(&mut write_socket);
-            return;
+            log_err!(LogLevel::Error, "Failed to read header line.");
+            respond_and_return!(StatusCode::RequestTimeout, response, &mut write_socket);
         }
 
         if buffer_len == 0 {
@@ -88,16 +70,14 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
 
         let new_total_byte_count: usize = read_byte_count + buffer_len;
         if new_total_byte_count > *request.get_total_header_bytes() {
-            LogEntry::new()
-                .set_level(LogLevel::Error)
-                .set_message(format!(
+            log_err!(
+                LogLevel::Error,
+                format!(
                     "Content of header exceeded the max of {} bytes",
                     request.get_total_header_bytes()
-                ));
-
-            response.set_status(StatusCode::PayloadTooLarge);
-            response.send(&mut write_socket);
-            return;
+                )
+            );
+            respond_and_return!(StatusCode::PayloadTooLarge, response, &mut write_socket);
         }
         read_byte_count = new_total_byte_count;
 
@@ -115,37 +95,31 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         let value: String = key_value_pair[1].trim().to_owned().to_lowercase();
 
         if !is_valid_header_key(&key) || !is_valid_header_value(&value) {
-            LogEntry::new()
-                .set_level(LogLevel::Error)
-                .set_message("Header value or key contained illegal characters.");
-
-            response.set_status(StatusCode::BadRequest);
-            response.send(&mut write_socket);
-            return;
+            log_err!(
+                LogLevel::Error,
+                "Header value or key contained illegal characters."
+            );
+            respond_and_return!(StatusCode::BadRequest, response, &mut write_socket);
         }
 
         if key == "content-length" {
             let Ok(parsed_req_value) = request.parse_content_length(&value) else {
-                LogEntry::new()
-                    .set_level(LogLevel::Error)
-                    .set_message("Content-Length was unabled to be parsed to u64.");
-
-                response.set_status(StatusCode::BadRequest);
-                response.send(&mut write_socket);
-                return;
+                log_err!(
+                    LogLevel::Error,
+                    "Content-Length was unable to be parsed to u64."
+                );
+                respond_and_return!(StatusCode::BadRequest, response, &mut write_socket);
             };
 
             if !request.is_content_length_allowed(parsed_req_value) {
-                LogEntry::new()
-                    .set_level(LogLevel::Error)
-                    .set_message(format!(
+                log_err!(
+                    LogLevel::Error,
+                    format!(
                         "The max allowed body length of {} bytes was exceeded.",
                         request.get_max_body_len_bytes()
-                    ));
-
-                response.set_status(StatusCode::PayloadTooLarge);
-                response.send(&mut write_socket);
-                return;
+                    )
+                );
+                respond_and_return!(StatusCode::PayloadTooLarge, response, &mut write_socket);
             }
 
             request.set_body_length(parsed_req_value);
@@ -160,13 +134,8 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
     let body: String = match request.read_body() {
         Ok(v) => v,
         Err(e) => {
-            LogEntry::new()
-                .set_level(LogLevel::Error)
-                .set_message(format!("Could not read body."));
-
-            response.set_status(e);
-            response.send(&mut write_socket);
-            return;
+            log_err!(LogLevel::Error, "Could not read body.");
+            respond_and_return!(StatusCode::BadRequest, response, &mut write_socket);
         }
     };
 

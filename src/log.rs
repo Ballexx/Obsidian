@@ -7,7 +7,6 @@ pub enum LogLevel {
     Info,
     Debug,
 }
-
 impl LogLevel {
     fn as_str(&self) -> &'static str {
         match self {
@@ -43,4 +42,20 @@ impl LogEntry {
         self.message = msg.into();
         return self;
     }
+}
+
+#[macro_export]
+macro_rules! log_err {
+    ($level:expr, $message:expr) => {
+        LogEntry::new().set_level($level).set_message($message);
+    };
+}
+
+#[macro_export]
+macro_rules! respond_and_return {
+    ($status_code:expr, $response:expr, $socket:expr) => {
+        $response.set_status($status_code);
+        $response.send($socket);
+        return;
+    };
 }
