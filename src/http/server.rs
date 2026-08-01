@@ -1,18 +1,16 @@
-use crate::log::{LogEntry, LogLevel};
-use crate::{respond_and_return, log_err};
-use crate::{
-    http::{
-        method::Method,
-        request::{Request, RequestLine},
-        response::Response,
-        status::StatusCode,
-    },
+use crate::http::{MAX_BODY_LEN_BYTES, TOTAL_HEADER_BYTES};
+use crate::http::{
+    method::Method,
+    request::{Request, RequestLine},
+    response::Response,
+    status::StatusCode,
 };
+use crate::log::{LogEntry, LogLevel};
+use crate::{log_err, respond_and_return};
 use std::io::{BufRead, BufReader, Read, Take};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread;
 use std::time::{Duration, Instant};
-use crate::http::{MAX_BODY_LEN_BYTES, TOTAL_HEADER_BYTES}
 
 fn is_valid_header_key(key: &str) -> bool {
     !key.is_empty()
@@ -126,7 +124,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         }
 
         if key == "content-type" && value == "application/x-www-form-urlencoded" {
-            request_line.handle_form_urlencoded(query);
+            //  request_line.handle_form_urlencoded(query);     detta kan vänta
         }
 
         request.insert_header(key, value);

@@ -1,20 +1,55 @@
-use crate::http::{URI_MAX_LEN, MAX_BODY_LEN_BYTES};
+use crate::http::{MAX_BODY_LEN_BYTES, URI_MAX_LEN};
 use crate::http::{method::Method, status::StatusCode};
 use std::collections::HashMap;
-use std::fmt::format;
 use std::io::{BufReader, Read, Take};
 use std::net::TcpStream;
 use std::num::ParseIntError;
-use std::println;
 use std::str::{Bytes, Chars, FromStr, Split, from_utf8};
+use std::{path, println};
 
 fn is_valid_query_value(value: &str) -> bool {
     return !value.chars().any(|c| c.is_control());
 }
 
+fn parse_query(request: &mut RequestLine) -> Result<(), StatusCode> {
+    let Some((path_part, query_part)) = request.path.split_once('?') else {
+        return Ok(());
+    };
+
+    if !is_valid_query_value(query_part) {
+        return Err(StatusCode::BadRequest);
+    }
+
+    let Ok(decoded_query) = decode_query(query_part) else {
+        return Err(StatusCode::BadRequest);
+    };
+
+    let query_pairs: Vec<&str> = decoded_query.split("&").collect();
+    let new_path = path_part.to_owned();
+
+    for pair in query_pairs {
+        let key_value: Vec<&str> = pair.splitn(2, "=").collect();
+
+        if key_value.len() != 2 {
+            return Err(StatusCode::BadRequest);
+        }
+
+        if !is_valid_query_value(key_value[0]) || !is_valid_query_value(key_value[1]) {
+            return Err(StatusCode::BadRequest);
+        }
+
+        request
+            .get_query_mut()
+            .insert(key_value[0].to_owned(), key_value[1].to_owned());
+    }
+    request.path = new_path;
+
+    Ok(())
+}
+
 fn decode_query(query: &str) -> Result<String, StatusCode> {
     let mut query_as_bytes = query.bytes();
-    let mut new_byte_list = Vec::new();max_body_len_bytes
+    let mut new_byte_list = Vec::new();
 
     while let Some(c) = query_as_bytes.next() {
         if c != b'%' {
@@ -66,22 +101,28 @@ impl RequestLine {
     }
 
     pub fn get_method(&self) -> &Method {
-        return &self.method;
+        &self.method
     }
 
     pub fn get_path(&self) -> &String {
-        return &self.path;
+        &self.path
     }
 
     pub fn get_query(&self) -> &HashMap<String, String> {
-        return &self.query;
+        &self.query
+    }
+
+    pub fn get_query_mut(&mut self) -> &mut HashMap<String, String> {
+        &mut self.query
     }
 
     pub fn get_version(&self) -> &String {
-        return &self.version;
+        &self.version
     }
 
-    pub fn handle_form_urlencoded(&self, query: &String) -> String {}
+    pub fn handle_form_urlencoded(&self, query: String) -> String {
+        String::from("Placeholder")
+    }
 
     pub fn parse(request_line: String) -> Result<Self, StatusCode> {
         let mut request = RequestLine::new();
@@ -103,41 +144,13 @@ impl RequestLine {
             return Err(StatusCode::UriTooLong);
         }
 
-        if let Some((path_part, query_part)) = request.path.split_once('?') {
-            if !is_valid_query_value(query_part) {
-                return Err(StatusCode::BadRequest);
-            }
-
-            let Ok(decoded_query) = decode_query(query_part) else {
-                return Err(StatusCode::BadRequest);
-            };
-
-            let query_pairs: Vec<&str> = decoded_query.split("&").collect();
-
-            for pair in query_pairs {
-                let key_value: Vec<&str> = pair.splitn(2, "=").collect();
-
-                if key_value.len() != 2 {
-                    return Err(StatusCode::BadRequest);
-                }
-
-                if !is_valid_query_value(key_value[0]) || !is_valid_query_value(key_value[1]) {
-                    return Err(StatusCode::BadRequest);
-                }
-
-                request
-                    .query
-                    .insert(key_value[0].to_owned(), key_value[1].to_owned());
-            }
-
-            request.path = path_part.to_owned();
-        }
-
         if !request.path.starts_with('/')
             || request.path.chars().any(|c| c.is_control() || c == ' ')
         {
             return Err(StatusCode::BadRequest);
         }
+
+        parse_query(&mut request);
 
         if request.version != "HTTP/1.0" && request.version != "HTTP/1.1" {
             return Err(StatusCode::HttpVersionNotSupported);
@@ -163,7 +176,7 @@ impl Request {
     }
 
     pub fn get_reader(&mut self) -> &mut BufReader<TcpStream> {
-        return &mut self.reader;
+        &mut self.reader
     }
 
     pub fn insert_header(&mut self, key: String, value: String) {
@@ -171,11 +184,11 @@ impl Request {
     }
 
     pub fn get_headers(&self) -> &HashMap<String, String> {
-        return &self.headers;
+        &self.headers
     }
 
     pub fn parse_content_length(&self, value: &str) -> Result<u64, ParseIntError> {
-        return value.parse::<u64>();
+        value.parse::<u64>()
     }
 
     pub fn is_content_length_allowed(&self, body_length: u64) -> bool {
@@ -184,7 +197,7 @@ impl Request {
             return false;
         }
 
-        return true;
+        true
     }
 
     pub fn set_body_length(&mut self, body_length: u64) {
