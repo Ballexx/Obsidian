@@ -7,6 +7,7 @@ use crate::http::{
 };
 use crate::log::{LogEntry, LogLevel};
 use crate::{log_err, respond_and_return};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Take};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::thread;
@@ -21,6 +22,15 @@ fn is_valid_header_key(key: &str) -> bool {
 
 fn is_valid_header_value(value: &str) -> bool {
     !value.chars().any(|c: char| c == '\r' || c == '\n')
+}
+
+fn route(request_line: &RequestLine, request: &mut Request) -> Response {
+    match (request_line.get_method(), request_line.get_path().as_str()) {
+        (Method::Get, "/.well-known/openid-configuration") => handle_discovery(),
+        (Method::Get, "/authorize") => handle_authorize(request_line, request),
+        (Method::Post, "/token") => handle_token(request_line, request),
+        _ => build_not_found_response(),
+    }
 }
 
 fn handle_connection(socket: TcpStream, addr: SocketAddr) {
