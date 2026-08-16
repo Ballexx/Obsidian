@@ -1,3 +1,4 @@
+use crate::http::route::handle_route;
 use crate::http::{MAX_BODY_LEN_BYTES, TOTAL_HEADER_BYTES};
 use crate::http::{
     method::Method,
@@ -10,6 +11,7 @@ use crate::{AppState, log_err, respond_and_return};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Take};
 use std::net::{SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -24,7 +26,7 @@ fn is_valid_header_value(value: &str) -> bool {
     !value.chars().any(|c: char| c == '\r' || c == '\n')
 }
 
-fn handle_connection(socket: TcpStream, addr: SocketAddr) {
+fn handle_connection(socket: TcpStream, addr: SocketAddr, state: Arc<AppState>) {
     let run_timer = Instant::now();
 
     let Ok(mut write_socket) = socket.try_clone() else {
@@ -132,7 +134,7 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         header_line.clear();
     }
 
-    let body = match request.read_body() {
+    let req_body = match request.read_body() {
         Ok(v) => v,
         Err(e) => {
             log_err!(LogLevel::Error, "Could not read body.");
@@ -140,11 +142,11 @@ fn handle_connection(socket: TcpStream, addr: SocketAddr) {
         }
     };
 
-    response.set_status(StatusCode::Ok);
+    handle_route(&request_line, &mut request, &state).send(&mut write_socket);
     response.send(&mut write_socket);
 }
 
-pub fn listen(ip: &str, port: u16, state: &AppState) {
+pub fn listen(ip: &str, port: u16, state: Arc<AppState>) {
     let host = format!("{}:{}", ip, port);
     let Ok(listener) = TcpListener::bind(host) else {
         log_err!(LogLevel::Error, "Failed to bind to port.");
@@ -159,8 +161,10 @@ pub fn listen(ip: &str, port: u16, state: &AppState) {
                     return;
                 };
 
+                let state_c = Arc::clone(&state);
+
                 thread::spawn(move || {
-                    handle_connection(socket, addr);
+                    handle_connection(socket, addr, state_c);
                 });
             }
             Err(_) => {

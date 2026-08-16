@@ -1,6 +1,9 @@
-use crate::log::{LogEntry, LogLevel};
+use crate::AppState;
+use crate::{http::response::Response, http::status::StatusCode};
+use serde_json;
 use std::{env, format, vec};
 
+#[derive(serde::Serialize)]
 pub struct WellKnownConfig {
     issuer: String,
     auth_endpoint: String,
@@ -36,5 +39,18 @@ impl WellKnownConfig {
         }
     }
 
-    fn handle_discovery() {}
+    pub fn handle_discovery(state: &AppState) -> Response {
+        let config = &state.well_known_config;
+
+        let mut response = Response::new();
+        response.set_response_header("Content-Type".to_owned(), "application/json".to_owned());
+
+        let Ok(json_body) = serde_json::to_string(&state.well_known_config) else {
+            response.set_status(StatusCode::InternalServerError);
+            return response;
+        };
+
+        response.set_response_body(json_body);
+        response
+    }
 }
