@@ -1,0 +1,3 @@
+struct Client {}
+
+impl Client {}
