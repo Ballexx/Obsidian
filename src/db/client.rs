@@ -1,3 +1,5 @@
 struct Client {}
 
-impl Client {}
+impl Client {
+    pub fn create_user() {}
+}
